@@ -1,100 +1,59 @@
-// pipeline {
-//     agent any
-
-//     environment {
-//         DOCKER_IMAGE = 'chartinee/my-web-app'
-//         DOCKER_CREDENTIALS_ID = 'docker-hub-credentials'
-//     }
-
-//     stages {
-
-//         stage('Checkout') {
-//             steps {
-//                 checkout scm
-//             }
-//         }
-
-//         stage('Build & Push Image') {
-//             steps {
-//                 script {
-//                     echo "Building & pushing Docker image..."
-
-//                     docker.withRegistry('https://index.docker.io/v1/', DOCKER_CREDENTIALS_ID) {
-
-//                         def img = docker.build("${DOCKER_IMAGE}:latest")
-
-//                         img.push("latest")
-//                     }
-
-//                 }
-//             }
-//         }
-
-//         stage('Deploy') {
-//             steps {
-//                 echo "Deployment step goes here (optional)"
-//             }
-//         }
-//     }
-// }
-
-
+// Use a declarative pipeline structure
 pipeline {
+    // Defines where the pipeline will run (your Jenkins Agent/Node)
     agent any
 
+    // Environment variables used throughout the pipeline
     environment {
-        // Keeps your image name consistent across all stages
+        // Image name for Docker Hub
         DOCKER_IMAGE = 'chartinee/my-web-app'
+        // Credential ID configured in Jenkins for Docker Hub access
         DOCKER_CREDENTIALS_ID = 'docker-hub-credentials'
+        // Explicitly set DOCKER_HOST for Windows agent to communicate with Docker Desktop
+        DOCKER_HOST = 'tcp://localhost:2375'
     }
 
     stages {
 
         stage('Checkout') {
             steps {
-                echo "Cloning the repository if it doesn't exist..."
-                bat '''
-                if not exist ".git" (
-                    git clone https://github.com/kayitesiii/my-web-app.git .
-                ) else (
-                    echo Repository already exists. Skipping clone.
-                    git fetch --all
-                    git reset --hard origin/main
-                )
-                '''
+                echo "Checking out code using Jenkins built-in Git plugin..."
+                // **FIX:** This uses the Jenkins SCM capability, which already knows the full path to git.exe,
+                // and correctly handles fetching/resetting the code from the repository defined in the job configuration.
+                checkout scm
             }
         }
 
-        stage('Build') {
+        stage('Build & Test') {
             steps {
-                echo "Building the project..."
-                bat 'dir'   // Windows agent
+                echo "Listing files to confirm checkout location..."
+                // Use the correct command for your Windows agent
+                bat 'dir'
+                echo "Build and Test steps would run here (e.g., npm install, npm test)..."
+                // Placeholder for actual build/test commands
+                // bat 'npm install'
+                // bat 'npm test'
             }
         }
 
-        stage('Test') {
-            steps {
-                echo "Running tests..."
-                // Add actual test commands here later (e.g., npm test)
+        stage('Build & Push Docker Image') {
+            // Ensure Docker commands run only if the image build/test was successful
+            when {
+                expression { currentBuild.result == null || currentBuild.result == 'SUCCESS' }
             }
-        }
-
-        stage('Deploy') {
-            steps {
-                echo "Deploying..."
-            }
-        }
-
-        stage('Build and Push Docker Image') {
             steps {
                 script {
-                    // We stick with your TCP config if that is how your Docker Desktop is set up
-                    docker.withServer('tcp://localhost:2375') {
-                        // Notice I added the tag to the build command to be safe
-                        def dockerImage = docker.build("${DOCKER_IMAGE}:latest", "--no-cache .")
-                        
+                    echo "Building and pushing Docker image: ${DOCKER_IMAGE}:latest"
+
+                    // 1. Build the image locally
+                    // Use withServer for DOCKER_HOST setting, which is specified in the environment block
+                    docker.withServer(env.DOCKER_HOST) {
+                        def dockerImage = docker.build("${DOCKER_IMAGE}:latest", ".")
+
+                        // 2. Push the image to Docker Hub using stored credentials
                         docker.withRegistry('https://index.docker.io/v1/', DOCKER_CREDENTIALS_ID) {
                             dockerImage.push('latest')
+                            echo "Image pushed successfully to Docker Hub."
                         }
                     }
                 }
@@ -103,12 +62,17 @@ pipeline {
 
         stage('Deploy to Local Docker Host') {
             steps {
-                // FIXED: Used %DOCKER_IMAGE% variable instead of "username/..."
-                // Added logic to stop the container only if it is actually running to prevent errors
+                // Deployment commands using the Windows Batch shell (bat)
                 bat """
-                    docker stop my-web-app || echo "Container not running..."
-                    docker rm -f my-web-app || echo "No container to remove..."
+                    echo Stopping and removing old container...
+                    // Attempt to stop and remove, using '|| echo' to prevent failure if container doesn't exist
+                    docker stop my-web-app || echo "Container 'my-web-app' not running, skipping stop."
+                    docker rm -f my-web-app || echo "Container 'my-web-app' not found, skipping removal."
+
+                    echo Running new container...
+                    // Run the newly pushed image
                     docker run -d --name my-web-app -p 8090:3000 ${DOCKER_IMAGE}:latest
+                    echo Deployment complete. Access app at http://<Jenkins-Host-IP>:8090
                 """
             }
         }
@@ -116,11 +80,10 @@ pipeline {
 
     post {
         success {
-            echo "Pipeline completed successfully!"
+            echo "✅ Pipeline completed successfully!"
         }
         failure {
-            echo "Pipeline failed Check logs."
+            echo "❌ Pipeline failed. Please check the logs above for details."
         }
     }
 }
-
